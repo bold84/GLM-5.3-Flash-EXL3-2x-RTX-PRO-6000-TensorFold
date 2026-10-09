@@ -1,8 +1,8 @@
 # Current patch SHA256
 
-These are the 86 patches for TensorFold v0.6.6 at
+These are the 87 patches for TensorFold v0.6.6 at
 `cb2ebf0540f42604e2759b2ddef497861e928248`, in global patch-number order.
-The 4x and 2x recipes share the same patch bytes. Neither source revision contains optional patch files.
+The 4x and 2x recipes share the same first 86 patch bytes; 0088-glm-spill-tier is this recipe's. Neither source revision contains optional patch files.
 See [the rebase notes](PORT-v0.6.5.md#rebase-to-v066) for the six regenerated patches.
 
 | Patch | SHA256 |
@@ -93,3 +93,4 @@ See [the rebase notes](PORT-v0.6.5.md#rebase-to-v066) for the six regenerated pa
 | [0085-glm-port-settings-check.patch](../patches/aevonix/0085-glm-port-settings-check.patch) | `7ce6e902d05182938051c313af983d30946ba6ec5d778672a90e42505447848e` |
 | [0086-glm-port-lane-exl3-view.patch](../patches/aevonix/0086-glm-port-lane-exl3-view.patch) | `e854587114d3554a8333316d5a9d1f2bbb996b13d4a4c7bfb87116036a87b04d` |
 | [0087-glm-port-stage2-routes.patch](../patches/aevonix/0087-glm-port-stage2-routes.patch) | `31b70c9400545b14c6856209faf6570c084f36f501b0f243e47acd8af6b9f418` |
+| [0088-glm-spill-tier.patch](../patches/miaai-lab/0088-glm-spill-tier.patch) | `97197fa13bf2307a972a4f818ffea995936edd610aabeeb439135d8592f6298f` |

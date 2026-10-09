@@ -72,6 +72,18 @@ MEMORY_RESERVE_GIB="${MEMORY_RESERVE_GIB:-6}"
 MEASURED_POWER_W="${MEASURED_POWER_W:-300}"   # power limit the published results used; the scripts warn, never change it
 KV_POOL_GIB="${KV_POOL_GIB:-3.75}"
 
+# Spill tier (patch 0088, off by default): kept prompt states that leave the KV pool go to local disk on every rank
+# and come back instead of a prefill when their conversation returns, also after a clean restart (a stop writes what
+# is kept within TF_SPILL_FLUSH_S, plus STOP_TIMEOUT). SPILL_GIB caps the disk a rank; both ranks share SPILL_DIR
+# (one subfolder a rank). TF_SPILL_WRITERS (2) and TF_SPILL_DIRECT (1) tune the writers.
+SPILL_GIB="${SPILL_GIB:-0}"
+SPILL_DIR="${SPILL_DIR:-$DATA_DIR/spill}"
+SPILL_HIGHWATER="${SPILL_HIGHWATER:-0.70}"      # past this fraction of the pool, the next evictions are written early
+SPILL_MIN_TOKENS="${SPILL_MIN_TOKENS:-8192}"    # shorter prompt states are not written
+SPILL_MIN_FREE_GIB="${SPILL_MIN_FREE_GIB:-50}"  # no write leaves less disk free
+SPILL_KEEP_BUILDS="${SPILL_KEEP_BUILDS:-1}"     # other builds' stored prompts kept at start
+export TF_SPILL_FLUSH_S="${TF_SPILL_FLUSH_S:-60}"
+
 # Setup and checks. DRY_RUN prints plans and commands without running Docker or touching GPUs.
 DRY_RUN="${DRY_RUN:-0}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-2400}"           # seconds for API readiness, including remaining JIT builds

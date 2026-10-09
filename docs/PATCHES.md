@@ -1,7 +1,7 @@
 # Patch reference
 
-The release applies **86 release patches** to [TensorFold v0.6.6](https://github.com/ashhart/TensorFold/tree/v0.6.6),
-commit `cb2ebf0540f42604e2759b2ddef497861e928248`. The 54 patches in `patches/miaai-lab/` are Mia's AI Lab's
+The release applies **87 release patches** to [TensorFold v0.6.6](https://github.com/ashhart/TensorFold/tree/v0.6.6),
+commit `cb2ebf0540f42604e2759b2ddef497861e928248`. The 55 patches in `patches/miaai-lab/` are Mia's AI Lab's
 recipe work. The v0.6.6 changes to her patches are a rebase only, and attribution remains hers.
 The 32 in `patches/aevonix/` are Aevonix Research's port and single-host work.
 See [Rebase to v0.6.6](PORT-v0.6.5.md#rebase-to-v066) for the six regenerated patches and
@@ -113,6 +113,7 @@ arithmetic; the universal EXL3 route needs separate references.
 | [0085-glm-port-settings-check](../patches/aevonix/0085-glm-port-settings-check.patch) | Checks EXL3 route and grouped-qmm settings agree on all ranks. | Always; no switch. | structural | Generic validation pattern; GLM settings. |
 | [0086-glm-port-lane-exl3-view](../patches/aevonix/0086-glm-port-lane-exl3-view.patch) | Gives universal EXL3 prompt lanes separate scratch-row views. | Always; applies on universal route. | structural; GLM route unchanged | GLM universal-route compatibility. |
 | [0087-glm-port-stage2-routes](../patches/aevonix/0087-glm-port-stage2-routes.patch) | Guards GLM-only optimizations by route and preserves seed salt in warm turns. | Always; follows route and `TENSORFOLD_SEED_SALT`. | structural; unchanged GLM route with salt unset | GLM route guards; generic host-seed rule. |
+| [0088-glm-spill-tier](../patches/miaai-lab/0088-glm-spill-tier.patch) | Kept prompt states that leave the KV pool go to local disk on every rank (`--spill-gib`, `SPILL_GIB`, off by default) and come back instead of a prefill, also after a clean restart; new model-agnostic `tensorfold/cuda/spill.py`, hooks in the one-stream and `--parallel` paths, early background writes past `SPILL_HIGHWATER`, a shutdown flush, and `spill` counters in `/health` and `/metrics`. | `SPILL_GIB>0`; `SPILL_DIR`, `SPILL_HIGHWATER`, `SPILL_MIN_TOKENS`, `SPILL_MIN_FREE_GIB`, `SPILL_KEEP_BUILDS`, `TF_SPILL_FLUSH_S`/`_WRITERS`/`_DIRECT`. | a restored state equals a fresh prefill's (per-writer CRC-32, a compatibility hash a build); prompts with images and states off the prompt grid are never written; a failed read falls back to a prefill | Port of Mia's AI Lab's DGX-Spark 0088 by @wojo (PR #78), adapted to this series; Apache-2.0. |
 
 Apply the series with `scripts/apply-patches.sh`, which merges both origin directories into global filename
 order and refuses fuzz, offsets and leftover patch artifacts. It accepts an existing unpatched checkout or

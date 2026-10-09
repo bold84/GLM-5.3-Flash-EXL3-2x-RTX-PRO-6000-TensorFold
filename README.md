@@ -192,7 +192,7 @@ cd GLM-5.3-Flash-EXL3-2x-RTX-PRO-6000-TensorFold
 
 <p align="center"><img src=".github/banner.gif" alt="Two-GPU recipe terminal opener with two-GPU defaults and measured decode results" width="100%"></p>
 
-The first run checks the host, builds TensorFold v0.6.6 at the pinned commit with all 86 patches, downloads the pinned
+The first run checks the host, builds TensorFold v0.6.6 at the pinned commit with all 87 patches, downloads the pinned
 checkpoint and drafter, compiles kernels and runs the one-time TP2 launch-table autotune. Keep the GPUs idle.
 Later runs reuse compiled kernels and the matching launch table. The script starts two local ranks, waits for the API, sends a short greedy
 smoke request and prints `GLM-5.3-Flash-EXL3 is now LIVE! on port 8022` with the endpoint.
@@ -246,7 +246,7 @@ output. Read a rank log with `tar -xOzf logs/<archive>.tar.gz ./rank0.log`; the 
 | Message | What to do |
 | --- | --- |
 | `E_CONFIG`: invalid setting | Use the allowed values in `scripts/config.sh`; MTP requires `PARALLEL=1`, and GPU indices must be distinct. |
-| `E_PATCHES`: expected 86 patches | Restore the complete release's two patch folders. |
+| `E_PATCHES`: expected 87 patches | Restore the complete release's two patch folders. |
 | `E_PLATFORM`: requires Linux x86_64 | Run this recipe on a supported Linux host. |
 | `E_DEPENDENCY`: missing command | Install the named command from Requirements. |
 | `E_DOCKER`: cannot talk to Docker | Start Docker and check access to its socket. |
@@ -309,7 +309,7 @@ The engine checks the memory budget again when vision is enabled.
 `./start.sh` shows each step as it runs:
 
 1. Check the settings, Linux, Docker, NVIDIA runtime, GPU availability, free disk space and optional download token.
-2. Build the pinned TensorFold v0.6.6 image and apply all 86 release patches, skipping a matching image.
+2. Build the pinned TensorFold v0.6.6 image and apply all 87 release patches, skipping a matching image.
 3. Download the pinned checkpoint and selected drafter, skipping ready downloads.
 4. Check CUDA peer access, compile kernels and autotune the TP2 launch table, reusing a matching cache.
 5. Start one container with two local TensorFold ranks. Rank 0 serves the API and each rank writes its own log.
@@ -379,6 +379,25 @@ The engine checks the requested window against available memory. A context-budge
 GPU memory or reducing `CONTEXT`; the launcher does not silently shrink it. `KV=bf16` needs more memory.
 Dense and KV quantization and chunked KDA have separate numerical limits; see [Checks](#checks).
 
+## Spill tier
+
+Off by default; turn it on with `SPILL_GIB=64 ./start.sh restart` (any value above 0). A kept prompt state that
+leaves the KV pool — evicted for another conversation, dropped at the kept-prompt cap, or left by a restart — is
+written to `SPILL_DIR` on every rank (patch 0088, Mia's AI Lab's disk tier by @wojo, ported from her DGX-Spark
+recipe) and read back when a later request extends the same tokens, instead of a prefill. With `PARALLEL` above 1,
+past `SPILL_HIGHWATER` (0.70) of the pool the states eviction would take next are written early in the background,
+so an eviction frees its rows at once; a clean stop (`./stop.sh`, `restart`) writes what is still kept within
+`TF_SPILL_FLUSH_S` (60 s), and the stop waits for it.
+
+What is and is not stored: prompts of at least `SPILL_MIN_TOKENS` (8,192) tokens, on the prompt grid, without
+images (their rows are not their token ids' rows); states a longer state of the same conversation supersedes are
+skipped. Files cost about 6.7 KB per token per rank (~1.4 GB per rank for a 200k-token conversation), are owned by
+your user, hold your prompts' token ids, and the oldest go past `SPILL_GIB` or below the `SPILL_MIN_FREE_GIB`
+floor. A restored conversation equals its fresh-prefill reply (a CRC-32 per 8 MiB and a per-build compatibility
+hash; a failed read falls back to a prefill). `TF_SPILL_WRITERS` (2) and `TF_SPILL_DIRECT` (1) tune the writers;
+point `SPILL_DIR` at a tmpfs to keep the tier in host RAM (restarts then resume only what the flush wrote before
+the tmpfs went away). The tier's counters are in `/health` under `spill` and in Prometheus `/metrics`.
+
 ## Configuration
 
 Settings come from the **environment**, then **`scripts/local.sh`**, then **`.env`**, then the defaults in
@@ -411,6 +430,9 @@ NO_ANIM=1 ./start.sh           # static command deck, without the opener animati
 | `MAX_TOKENS` | `32768` | Default completion budget when omitted by the request |
 | `VISION` | `1` | Image and video input; set to `0` to free the tower and workspace on GPU 0 |
 | `MEMORY_RESERVE_GIB` / `KV_POOL_GIB` | `6` / `3.75` | Free-memory reserve and spare KV cache cap per GPU |
+| `SPILL_GIB` | `0` | Spill tier (patch 0088): disk a rank for kept prompt states, so an evicted conversation resumes instead of re-prefilling; `0` turns it off. See [Spill tier](#spill-tier) |
+| `SPILL_DIR` / `SPILL_HIGHWATER` / `SPILL_MIN_TOKENS` | `${DATA_DIR}/spill` / `0.70` / `8192` | Both ranks share the directory; past the high-water fraction the next evictions are written early; shorter prompts are not written |
+| `SPILL_MIN_FREE_GIB` / `SPILL_KEEP_BUILDS` / `TF_SPILL_FLUSH_S` | `50` / `1` / `60` | Disk free floor, other builds kept, and a clean stop's write budget (the stop waits for it) |
 | `MEASURED_POWER_W` | `300` | Published power limit in watts per GPU; warns with `W_POWER` on a difference and never changes power |
 | `DATA_DIR` | `${XDG_CACHE_HOME:-$HOME/.cache}/aevonix-glm53-2x` | Download and kernel cache root |
 | `MODEL_DIR` / `DFLASH2_DIR` / `KERNEL_CACHE` | Under `DATA_DIR` | Separate paths can be supplied |
@@ -486,7 +508,7 @@ The [complete patch table](docs/PATCHES.md) lists each change, its switch and ex
 | Warm turns | Incremental tokenization and prompt reuse reduce warm-turn preparation. |
 | Compatibility and checks | The series is rebased onto TensorFold v0.6.6. Launch-table candidates are checked against their reference kernel before timing. |
 
-TP2 uses the same 86 patches: 54 from Mia's AI Lab and 32 from Aevonix Research. Row splitting, copy-engine
+TP2 uses 87 patches: 55 from Mia's AI Lab and 32 from Aevonix Research. Row splitting, copy-engine
 exchange, index IPC and prompt lanes support two ranks. The two-GPU recipe leaves replicated lane projections and two-shot
 exchange off to limit memory use. The sparse fast kernel is guarded for a different head shape and stays off;
 TP2 uses its reference path. Launch tables are tuned for TP2, with the same first-use exactness checks.

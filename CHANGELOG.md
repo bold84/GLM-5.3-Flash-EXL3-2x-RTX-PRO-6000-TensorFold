@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0: Spill tier (2026-10-09)
+
+- Port Mia's AI Lab's disk tier for kept prompt states as patch `0088-glm-spill-tier` (87 patches total):
+  her DGX-Spark `0088` by @wojo (Apache-2.0, PR #78), adapted to this series (no display-span row moves,
+  no picture content keys, LRU kept-cap victims, and the scheduler hooks on this recipe's plain and ranked
+  admission paths). Off by default; `SPILL_GIB` turns it on.
+- An evicted or restarted conversation resumes from disk instead of re-prefilling; with `PARALLEL` above 1 the
+  states eviction would take next are written early past `SPILL_HIGHWATER`; a clean stop writes what is kept
+  within `TF_SPILL_FLUSH_S` and `./stop.sh` waits for it.
+- New settings `SPILL_GIB`, `SPILL_DIR`, `SPILL_HIGHWATER`, `SPILL_MIN_TOKENS`, `SPILL_MIN_FREE_GIB`,
+  `SPILL_KEEP_BUILDS`, `TF_SPILL_FLUSH_S` (plus `TF_SPILL_WRITERS`, `TF_SPILL_DIRECT`), validated by the launcher
+  and budgeted in its disk check. `spill` counters in `/health` and `/metrics`.
+- Stored states leave a snapshot's warm-turn rendering record out (`TF_W1_INCREMENTAL`): a restored prompt
+  re-renders on its next turn. Prompts with images are never written.
+- The series applies strictly to TensorFold v0.6.6 (no fuzz, offsets, `.rej` or `.orig`); the applied tree
+  compiles. GPU exactness gates (`tf_bench gate gatelong`) were not run for this entry; run them before
+  production use, and keep references per numerical configuration.
+
 ## 1.1.0: TensorFold v0.6.6 rebase (2026-10-08)
 
 - Rebase the 86-patch recipe onto TensorFold v0.6.6 at `cb2ebf0540f42604e2759b2ddef497861e928248`.

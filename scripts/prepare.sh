@@ -15,9 +15,12 @@ validate_config() {
   local key path
   [[ "$DRY_RUN" =~ ^[01]$ ]] || fail E_CONFIG 'DRY_RUN must be 0 or 1.'
   [[ "$DRAFTER" =~ ^(dflash2|mtp|none)$ && "$DENSE" =~ ^(fp8|q4|bf16)$ && "$KV" =~ ^(fp8|bf16)$ ]] || fail E_CONFIG 'Use DRAFTER=dflash2|mtp|none, DENSE=fp8|q4|bf16 and KV=fp8|bf16.'
-  for key in PARALLEL CONTEXT MAX_TOKENS PORT MASTER_PORT LOG_KEEP WAIT_TIMEOUT SMOKE_TIMEOUT STOP_TIMEOUT MIN_GPU_FREE_MIB MODEL_FREE_GIB DFLASH2_FREE_GIB IMAGE_FREE_GIB KERNEL_FREE_GIB; do
+  for key in PARALLEL CONTEXT MAX_TOKENS PORT MASTER_PORT LOG_KEEP WAIT_TIMEOUT SMOKE_TIMEOUT STOP_TIMEOUT MIN_GPU_FREE_MIB MODEL_FREE_GIB DFLASH2_FREE_GIB IMAGE_FREE_GIB KERNEL_FREE_GIB SPILL_MIN_TOKENS SPILL_KEEP_BUILDS; do
     [[ "${!key}" =~ ^[1-9][0-9]*$ ]] || fail E_CONFIG "$key must be a positive integer."
   done
+  [[ "$SPILL_GIB" =~ ^[0-9]+\.?[0-9]*$ && "$SPILL_HIGHWATER" =~ ^0?\.[0-9]+$ && "$SPILL_MIN_FREE_GIB" =~ ^[0-9]+\.?[0-9]*$ ]] \
+    || fail E_CONFIG 'SPILL_GIB and SPILL_MIN_FREE_GIB must be non-negative numbers; SPILL_HIGHWATER a fraction in (0, 1].'
+  awk -v h="$SPILL_HIGHWATER" 'BEGIN { exit !(h > 0 && h <= 1) }' || fail E_CONFIG 'SPILL_HIGHWATER must be in (0, 1].'
   (( PARALLEL <= 64 && CONTEXT <= 1048576 && PORT <= 65535 && MASTER_PORT <= 65535 && PORT != MASTER_PORT )) || fail E_CONFIG 'PARALLEL must be 1-64, CONTEXT at most 1048576, and ports distinct in 1-65535.'
   [[ "$DRAFTER" != mtp || "$PARALLEL" == 1 ]] || fail E_CONFIG 'DRAFTER=mtp requires PARALLEL=1.'
   for key in THINKING VISION; do [[ "${!key}" =~ ^[01]$ ]] || fail E_CONFIG "$key must be 0 or 1."; done
@@ -40,7 +43,7 @@ validate_config() {
 image_hash() {
   local patch
   mapfile -t PATCHES < <("$REPO_ROOT/scripts/apply-patches.sh" --list)
-  (( ${#PATCHES[@]} == 86 )) || fail E_PATCHES 'The release requires exactly 86 patches.'
+  (( ${#PATCHES[@]} == 87 )) || fail E_PATCHES 'The release requires exactly 87 patches.'
   { for patch in "${PATCHES[@]}"; do cat "$REPO_ROOT/$patch"; done
     cat "$REPO_ROOT/scripts/apply-patches.sh" "$REPO_ROOT/scripts/prepare.sh"
     printf '%s\n' "$TF_COMMIT" "$BASE_IMAGE" "$IMAGE_EXTRAS"
@@ -99,6 +102,7 @@ check_disk() {
     paths+=("$docker_root"); sizes+=("$IMAGE_FREE_GIB"); labels+=(image)
   fi
   if [[ ! -f "$ACTIVE_CACHE/.autotune-ready" ]]; then paths+=("$ACTIVE_CACHE"); sizes+=("$KERNEL_FREE_GIB"); labels+=(kernels); fi
+  if [[ "$SPILL_GIB" != 0 ]]; then paths+=("$SPILL_DIR"); sizes+=("$(awk -v g="$SPILL_GIB" -v n="$TP" 'BEGIN { printf "%d", n * g + 1 }')"); labels+=(spill); fi
   for (( i=0; i<${#paths[@]}; i++ )); do
     path=${paths[i]}; need=${sizes[i]}; label=${labels[i]}; ancestor=$path
     while [[ ! -e "$ancestor" ]]; do ancestor=$(dirname -- "$ancestor"); done
@@ -119,7 +123,7 @@ check_disk() {
 
 prepare_image() {
   if [[ "$DRY_RUN" != 1 ]] && image_ready; then log "Image is ready: $IMAGE ($PATCHES_HASH)"; return; fi
-  log "Build $IMAGE: clone TensorFold $TF_VERSION at $TF_COMMIT, apply 86 patches, install runtime."
+  log "Build $IMAGE: clone TensorFold $TF_VERSION at $TF_COMMIT, apply 87 patches, install runtime."
   run docker build -t "$IMAGE" --build-arg "BASE_IMAGE=$BASE_IMAGE" --build-arg "TF_REPO=$TF_REPO" \
     --build-arg "TF_COMMIT=$TF_COMMIT" --build-arg "IMAGE_EXTRAS=$IMAGE_EXTRAS" --build-arg "PATCHES_HASH=$PATCHES_HASH" \
     -f - "$REPO_ROOT" <<'DOCKERFILE' || fail E_IMAGE 'Image build failed. Check disk space, network access and the first build error.'

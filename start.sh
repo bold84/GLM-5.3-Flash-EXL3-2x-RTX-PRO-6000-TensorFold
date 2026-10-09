@@ -129,7 +129,7 @@ for host, port in ((sys.argv[1], int(sys.argv[2])), ("127.0.0.1", int(sys.argv[3
 PY
 fi
 
-step 2 'Build the pinned TensorFold image and apply all 86 release patches (skip when ready)'
+step 2 'Build the pinned TensorFold image and apply all 87 release patches (skip when ready)'
 prepare_image
 step 3 'Download the pinned checkpoint and selected drafter (skip when ready)'
 prepare_weights
@@ -142,6 +142,14 @@ step 5 "Start one container with $TP local TensorFold ranks"
 SERVE_ARGS=(--context "$CONTEXT" --parallel "$PARALLEL" --max-tokens "$MAX_TOKENS" --reasoning-effort "$REASONING_EFFORT")
 if [[ "$THINKING" == 1 ]]; then SERVE_ARGS+=(--thinking); else SERVE_ARGS+=(--no-thinking); fi
 [[ "$VISION" != 1 ]] || SERVE_ARGS+=(--vision)
+SPILL_MOUNT=()
+if [[ "$SPILL_GIB" != 0 ]]; then
+  SERVE_ARGS+=(--spill-gib "$SPILL_GIB" --snapshot-dir /spill --spill-highwater "$SPILL_HIGHWATER"
+               --spill-min-tokens "$SPILL_MIN_TOKENS" --spill-min-free-gib "$SPILL_MIN_FREE_GIB"
+               --spill-keep-builds "$SPILL_KEEP_BUILDS")
+  [[ "$DRY_RUN" == 1 ]] || mkdir -p "$SPILL_DIR"
+  SPILL_MOUNT=(-v "$SPILL_DIR:/spill")
+fi
 DRAFT_MOUNT=()
 if [[ "$DRAFTER" == dflash2 ]]; then
   SERVE_ARGS=(--drafter /dflash2 "${SERVE_ARGS[@]}")
@@ -155,7 +163,7 @@ else
 fi
 ENV_ARGS=(-e HF_HUB_OFFLINE=1)
 while IFS='=' read -r key _; do
-  case "$key" in TENSORFOLD_*|TF_GLM_*|TF_NCCL_*|TF_W1_*) ENV_ARGS+=(-e "$key") ;; esac
+  case "$key" in TENSORFOLD_*|TF_GLM_*|TF_NCCL_*|TF_W1_*|TF_SPILL_*) ENV_ARGS+=(-e "$key") ;; esac
 done < <(env | sort)
 NCCL_ARGS=(-e NCCL_SOCKET_IFNAME=lo -e NCCL_IB_DISABLE=1 -e "NCCL_MIN_NCHANNELS=$NCCL_CHANNELS" \
   -e "NCCL_MAX_NCHANNELS=$NCCL_CHANNELS" -e "NCCL_P2P_LEVEL=$NCCL_P2P_LEVEL" -e "NCCL_DEBUG=${NCCL_DEBUG:-WARN}")
@@ -191,7 +199,7 @@ log "The wrapper launches ranks 0-$((TP-1)) on $TP GPUs inside the container, ro
 run docker run -d --name "$CONTAINER_NAME" --init --restart=no --gpus "\"device=$GPUS\"" --ipc=host --network host \
   --shm-size 32g --ulimit memlock=-1 --ulimit stack=67108864 \
   "${ENV_ARGS[@]}" "${NCCL_ARGS[@]}" -e "TP=$TP" -e "MPORT=$MASTER_PORT" -e "SNAME=$SERVED_NAME" -e "SHOST=$HOST" -e "SPORT=$PORT" \
-  -v "$MODEL_DIR:/model:ro" "${DRAFT_MOUNT[@]}" -v "$ACTIVE_CACHE:/cache" -v "$RUN_LOG_DIR:/logs" \
+  -v "$MODEL_DIR:/model:ro" "${DRAFT_MOUNT[@]}" "${SPILL_MOUNT[@]}" -v "$ACTIVE_CACHE:/cache" -v "$RUN_LOG_DIR:/logs" \
   --entrypoint /logs/runner.sh "$IMAGE" "${SERVE_ARGS[@]}" || fail E_START 'Docker could not launch the server. Check its error and rerun.'
 
 finish_start

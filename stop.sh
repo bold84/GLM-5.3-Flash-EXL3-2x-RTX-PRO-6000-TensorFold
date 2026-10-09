@@ -6,8 +6,15 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 # shellcheck source=scripts/prepare.sh
 source ./scripts/prepare.sh
 [[ "$STOP_TIMEOUT" =~ ^[1-9][0-9]*$ && "$LOG_KEEP" =~ ^[1-9][0-9]*$ ]] || fail E_CONFIG 'STOP_TIMEOUT and LOG_KEEP must be positive integers.'
+# patch 0088's spill tier (SPILL_GIB>0): the SIGTERM handler writes kept prompt states to disk within
+# TF_SPILL_FLUSH_S (plus its scheduler margin), so the stop waits that much longer.
+STOP_WAIT=$STOP_TIMEOUT
+if [[ "${SPILL_GIB:-0}" != 0 ]]; then
+  STOP_WAIT=$(( STOP_TIMEOUT + $(awk -v s="${TF_SPILL_FLUSH_S:-60}" 'BEGIN { printf "%d", (s > int(s)) ? int(s) + 21 : int(s) + 20 }') ))
+fi
 if [[ "$DRY_RUN" == 1 ]]; then
-  plan docker stop -t "$STOP_TIMEOUT" "$CONTAINER_NAME"
+  plan docker stop -t "$STOP_WAIT" "$CONTAINER_NAME"
+  [[ "${SPILL_GIB:-0}" == 0 ]] || log "  Spill tier on: the extra wait leaves room for the shutdown flush."
   log "  Save all $TP rank logs and Docker output as $LOG_DIR/glm53-<timestamp>.tar.gz; keep newest $LOG_KEEP archives."
   plan docker rm "$CONTAINER_NAME"
   exit 0
@@ -22,8 +29,8 @@ fi
 if ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
   log "No container named $CONTAINER_NAME. Nothing to stop."; exit 0
 fi
-log "Stopping $CONTAINER_NAME (up to $STOP_TIMEOUT seconds; active requests will end)."
-docker stop -t "$STOP_TIMEOUT" "$CONTAINER_NAME" >/dev/null || fail E_STOP 'Docker could not stop the container. Inspect docker ps and retry.'
+log "Stopping $CONTAINER_NAME (up to $STOP_WAIT seconds; active requests will end)."
+docker stop -t "$STOP_WAIT" "$CONTAINER_NAME" >/dev/null || fail E_STOP 'Docker could not stop the container. Inspect docker ps and retry.'
 run_logs=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/logs"}}{{.Source}}{{end}}{{end}}' "$CONTAINER_NAME")
 mkdir -p "$LOG_DIR"
 archive="$LOG_DIR/glm53-$(date -u +%Y%m%dT%H%M%SZ)-$$.tar.gz"
