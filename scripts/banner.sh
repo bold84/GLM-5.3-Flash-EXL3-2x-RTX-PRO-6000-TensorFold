@@ -24,7 +24,7 @@ _banner_plain() {
 _banner_short() {
   printf '%s\n' \
     'AEVONIX RESEARCH | GLM-5.3-Flash EXL3 on 2x RTX PRO 6000' \
-    'Two-GPU recipe defaults: TensorFold v0.6.6 + 87 patches | 2x RTX PRO 6000 | API :8022' \
+    'Two-GPU recipe defaults: TensorFold v0.6.6 + 89 patches | 2x RTX PRO 6000 | API :8022' \
     "by Aevonix Research · in collaboration with Mia's AI Lab"
 }
 

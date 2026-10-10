@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.0: Image conversations resume (2026-10-10)
+
+- Port Mia's AI Lab's `0054-glm-image-prompt-reuse` as patch `0089-glm-image-prompt-reuse` (89 patches total):
+  image prompts resume from kept prompt states under `--parallel`, keyed by each picture's content (a 62-bit
+  key of its kind, shape and pixels in place of its placeholder tokens), and only the pictures past the resume
+  point are encoded again. The spill tier (0088) stores and restores image states by their keyed ids, so
+  screenshot-bearing agent sessions now resume like text ones -- the failure mode that motivated this port.
+- Port her `0079-glm-picture-cache` unchanged as patch `0090-glm-picture-cache`: a picture's decode, fit and
+  hash are remembered keyed by its source bytes (29.8 ms a picture measured on two Sparks), with the last few
+  canvases held for the tower.
+- Adaptations to this series: the int64-array resume comparison is kept (`_key_array` beside `_ids_array`),
+  the take-over and shared-prefix comparisons match keys, and kept-cap victims stay plain LRU.
+- The one-stream engine (`--parallel 1`) still resumes no image state. Exactness gates for this entry were
+  run for text (unchanged hashes vs the 1.2.0 baseline); image-turn resume equality is checked by the probe
+  in the validation log.
+
 ## 1.2.0: Spill tier (2026-10-09)
 
 - Port Mia's AI Lab's disk tier for kept prompt states as patch `0088-glm-spill-tier` (87 patches total):

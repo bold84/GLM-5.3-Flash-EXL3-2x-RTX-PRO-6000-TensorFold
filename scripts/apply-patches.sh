@@ -25,7 +25,7 @@ done
 
 # Sort by filename, across both origins. Directory order is not apply order.
 mapfile -t patches < <(cd "$repo_dir" && printf '%s\n' patches/{miaai-lab,aevonix}/*.patch | sort -t / -k3,3)
-[[ ${#patches[@]} == 87 ]] || fail 'expected exactly 87 release patches'
+[[ ${#patches[@]} == 89 ]] || fail 'expected exactly 89 release patches'
 previous=
 for p in "${patches[@]}"; do
   [[ -f "$repo_dir/$p" ]] || fail "missing patch series: $p"

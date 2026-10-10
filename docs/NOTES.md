@@ -34,7 +34,7 @@ The `--name-priority ID=background` smoke passed. The engine's model-name backgr
 is merged with the recipe's priority lanes when request priority is omitted. Explicit priorities
 still win, and title requests remain background. Without the option, B retains A's behavior.
 
-The 87 patches replay strictly to the expected tree. Six patch files were regenerated for the
+The 89 patches replay strictly to the expected tree. Six patch files were regenerated for the
 rebase and 80 remain byte-for-byte unchanged. Mia's AI Lab's four regenerated patches change
 hunk positions only, and her attribution is retained. The standalone CPU priority check passed
 31/31 cases. The upstream pytest module was skipped because `tokenizers` was unavailable.
@@ -83,7 +83,7 @@ check free memory and peer access; they do not change GPU power limits or platfo
 
 ## Reproduce the patch tree without GPUs
 
-The current series has **87 patches**, 55 from Mia's AI Lab and 32 from Aevonix Research, applied in
+The current series has **89 patches**, 58 from Mia's AI Lab and 32 from Aevonix Research, applied in
 global filename order to TensorFold v0.6.6 at `cb2ebf0540f42604e2759b2ddef497861e928248`.
 
 ```bash

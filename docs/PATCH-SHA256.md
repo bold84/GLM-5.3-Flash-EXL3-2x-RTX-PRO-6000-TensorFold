@@ -1,8 +1,8 @@
 # Current patch SHA256
 
-These are the 87 patches for TensorFold v0.6.6 at
+These are the 89 patches for TensorFold v0.6.6 at
 `cb2ebf0540f42604e2759b2ddef497861e928248`, in global patch-number order.
-The 4x and 2x recipes share the same first 86 patch bytes; 0088-glm-spill-tier is this recipe's. Neither source revision contains optional patch files.
+The 4x and 2x recipes share the same first 86 patch bytes; 0088-0090 are this recipe's. Neither source revision contains optional patch files.
 See [the rebase notes](PORT-v0.6.5.md#rebase-to-v066) for the six regenerated patches.
 
 | Patch | SHA256 |
@@ -94,3 +94,5 @@ See [the rebase notes](PORT-v0.6.5.md#rebase-to-v066) for the six regenerated pa
 | [0086-glm-port-lane-exl3-view.patch](../patches/aevonix/0086-glm-port-lane-exl3-view.patch) | `e854587114d3554a8333316d5a9d1f2bbb996b13d4a4c7bfb87116036a87b04d` |
 | [0087-glm-port-stage2-routes.patch](../patches/aevonix/0087-glm-port-stage2-routes.patch) | `31b70c9400545b14c6856209faf6570c084f36f501b0f243e47acd8af6b9f418` |
 | [0088-glm-spill-tier.patch](../patches/miaai-lab/0088-glm-spill-tier.patch) | `97197fa13bf2307a972a4f818ffea995936edd610aabeeb439135d8592f6298f` |
+| [0089-glm-image-prompt-reuse.patch](../patches/miaai-lab/0089-glm-image-prompt-reuse.patch) | `1fdc5431b3f206a345f4758d30d676a3af820f4b74f57d75ed944daddef069d2` |
+| [0090-glm-picture-cache.patch](../patches/miaai-lab/0090-glm-picture-cache.patch) | `177207eef95c728550a17589dd8dcda9326c18e57b5adad503b2858eaadd888d` |

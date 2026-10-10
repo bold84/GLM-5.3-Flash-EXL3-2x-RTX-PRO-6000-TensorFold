@@ -1,0 +1,446 @@
+# 0089-glm-image-prompt-reuse: image prompts resume from kept prompt states under --parallel, keyed by each
+# picture's content (a 62-bit key of its kind, shape and pixels in place of its placeholder tokens), and only the
+# pictures past the resume point are encoded again (the tower's rows rank 0 still hands the other ranks). Port of
+# Mia's AI Lab's 0054-glm-image-prompt-reuse (by @abhicnv007, MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold
+# #11, with Mia's review changes; Apache-2.0), adapted to this series: the int64-array resume comparison this tree
+# carries (``_ids_array``) is kept as ``_key_array``, the take-over and shared-prefix comparisons match keys, and the
+# spill tier (0088) stores and restores image states by their keyed ids (``_ident``, ``tokens``/``keyed`` in
+# cuda/spill.py's entry metadata, which 0088 already shipped), so an evicted or restarted image conversation resumes
+# too. The one-stream engine (``--parallel 1``) still resumes no image state; prompts whose pictures carry no content
+# keys resume none either. With 0090, a picture's decode is also remembered across turns.
+# TF_GLM_RESUME_DEBUG=1 logs every resume decision (the kept states' lengths, windows and keys, and each
+# candidate's rejection) on both ranks: for diagnosing exactly this class of prefix question.
+diff --git tensorfold/families/glm5_next/cuda/multi.py tensorfold/families/glm5_next/cuda/multi.py
+--- tensorfold/families/glm5_next/cuda/multi.py
++++ tensorfold/families/glm5_next/cuda/multi.py
+@@ -139,6 +139,20 @@
+     return share
+ 
+ 
++def _key_array(c) -> np.ndarray:
++    """A kept prompt's key (its keyed ids when it has pictures, ``_keep``) as an int64 array, made once and kept on
++    the snapshot (its key never changes either; rank 1 keeps none, so its lanes never resume by key)."""
++
++    arr = getattr(c, "key_np", None)
++    if arr is None or len(arr) != len(c.key):
++        arr = np.asarray(c.key, dtype=np.int64)
++        try:
++            c.key_np = arr
++        except AttributeError:            # a snapshot type without a free attribute slot: no cache
++            pass
++    return arr
++
++
+ def _ids_array(c) -> np.ndarray:
+     """A kept prompt's ids as an int64 array, made once and kept on the snapshot (its ids never change)."""
+ 
+@@ -317,6 +331,35 @@
+ 
+ 
+ # -- streams -------------------------------------------------------------------------------------------------------------
++def keyed_ids(prompt: Sequence[int], positions: Sequence[int], rows: Sequence[int], keys: Sequence[int]) -> list[int]:
++    """The prompt's ids with each picture's rows replaced by -1 - its content key (``GlmPrepared.keyed_ids``): equal
++    prefixes then mean the same pictures in the same places. Both ranks build them from the ADMIT's fields."""
++
++    ids, at = [int(t) for t in prompt], 0
++    for n, key in zip(rows, keys):
++        for p in positions[at:at + n]:
++            ids[p] = -1 - key
++        at += n
++    return ids
++
++
++def pack_keys(rows: Sequence[int], keys: Sequence[int], positions: Sequence[int]) -> list[int]:
++    """The ADMIT's picture fields: counts, rows a picture, each 62-bit key as two 31-bit halves, every picture row."""
++
++    halves = [h for k in keys for h in (k >> 31, k & 0x7FFFFFFF)]
++    return [len(rows), *rows, *halves, len(positions), *positions]
++
++
++def unpack_keys(p: Sequence[int], i: int) -> tuple[list[int], list[int], list[int], int]:
++    k = p[i]
++    rows = list(p[i + 1:i + 1 + k])
++    halves = p[i + 1 + k:i + 1 + 3 * k]
++    keys = [(halves[2 * j] << 31) | halves[2 * j + 1] for j in range(k)]
++    i += 1 + 3 * k
++    m = p[i]
++    return rows, keys, list(p[i + 1:i + 1 + m]), i + 1 + m
++
++
+ @dataclass(eq=False)
+ class Lane:
+     """An admitted stream: its request (``Stream``), slot, extent, state views and decoding state (both ranks)."""
+@@ -340,6 +383,8 @@
+     point: int | None = None           # where the prompt's own state is kept (engine.grid_point), or None
+     shared: list[int] = field(default_factory=list)
+     head: Any = None                   # a replay's first-token logits row (its kept prompt's, ``decode.whole``)
++    key: list[int] | None = None       # rank 0: the prompt's ids with its pictures' keys in their rows (kept states)
++    images: bool = False               # both ranks: the prompt has pictures (its kept states are told apart by key)
+     decoding: bool = False
+     paused: bool = False
+     t0: float = 0.0
+@@ -671,24 +716,29 @@
+                           self.dflash_code) if draft else [0, 0, 0, 0]
+         positions: list[int] = []
+         feed = None
+-        if s.vision is not None:              # encoded before anything is decided or sent: a failure stops here
++        key = prompt
++        vrows: list[int] = []
++        vkeys: list[int] = []
++        vpos: list[int] = []
++        if s.vision is not None:
+             if g.vision is None:
+                 raise ValueError("image inputs require starting this server with --vision")
+             positions = [int(p) for p in s.vision.positions]
+             if positions and (positions[-1] >= len(prompt) or positions != sorted(set(positions))):
+                 raise ValueError("image rows must sit at increasing positions inside the prompt")
+-            t = time.perf_counter()
+-            torch.cuda.empty_cache()
+-            rows = g.vision.features(s.vision)
+-            torch.cuda.empty_cache()
+-            if rows.shape[0] != len(positions):
+-                raise ValueError(f"the tower gave {rows.shape[0]} rows for {len(positions)} image positions")
+-            feed = VisionFeed(g, positions, rows)
+-            feed.encode_s = time.perf_counter() - t
++            keyed = getattr(s.vision, "item_keys", None)
++            if keyed and sum(s.vision.item_rows) == len(positions):
++                vrows, vkeys, vpos = [int(r) for r in s.vision.item_rows], [int(k) for k in keyed], list(positions)
++                key = keyed_ids(prompt, vpos, vrows, vkeys)
++            else:
++                key = None
+         slot = next((k for k in range(self.count) if k not in {l.slot for l in self.lanes.values()}), None)
+         if slot is None:
+             raise NoRoom(f"every one of the {self.count} stream slots is taken")
+-        hit = self._resume(prompt) if draft and feed is None else None
++        hit = self._resume(key) if draft and key is not None else None
++        encoded_from = len(hit.ids) if hit is not None else 0
++        if s.vision is not None:              # encoded before anything is sent: a failure stops here
++            feed = self._encode(s.vision, encoded_from)
+         need = self._need(len(prompt))
+         # placement: take a kept extent over in place, or copy its rows into a new one while a stream writes in it
+         copy = 0
+@@ -696,7 +746,7 @@
+         if hit is not None and hit.extent.owner is None:
+             x = hit.extent
+             for c in list(x.kept):            # kept prompts the stream would overwrite: gone
+-                if len(c.ids) > len(hit.ids) and prompt[:len(c.ids)] != c.ids:
++                if len(c.ids) > len(hit.ids) and key[:len(c.ids)] != c.key:
+                     self._evict(c)
+             if self._grow(x, need, protect=[x]):
+                 base = x.base
+@@ -710,11 +760,15 @@
+             if base is None:
+                 raise NoRoom(f"no room for a {need}-token extent in the {self.pool.rows}-token pool now")
+             copy = int(hit is not None)
++        if s.vision is not None and hit is None and encoded_from:
++            feed = None                       # (its rows freed before the tower runs again)
++            feed = self._encode(s.vision, 0)  # the kept state was given up: every picture, from the prompt's start
++        positions = feed.positions if feed is not None else []
+         cut = len(hit.ids) if hit is not None else 0
+         shared: list[int] = []
+-        if draft and feed is None and g.shared:
+-            known = [_ids_array(c) for c in self.kept]
+-            shared = shared_points(prompt, cut, grid_point(len(prompt), cut, self.grid), self.grid, g.shared, known,
++        if draft and key is not None and g.shared:
++            known = [_key_array(c) for c in self.kept if c.key is not None]
++            shared = shared_points(key, cut, grid_point(len(prompt), cut, self.grid), self.grid, g.shared, known,
+                                    g.opener)
+         sid = self.next_sid
+         payload = [sid, slot, base, need, hit.kid if hit is not None else -1, copy, s.count, int(s.stop_eos),
+@@ -723,13 +777,44 @@
+         from tensorfold.engine.grammar import pack
+ 
+         packed = pack(s.constraint)
+-        payload += [len(packed), *packed, len(positions), *positions]
++        payload += [len(packed), *packed, len(positions), *positions, int(s.vision is not None),
++                    *pack_keys(vrows, vkeys, vpos)]
+         self._emit(ADMIT, payload)
+         try:
+             self._admitted(self._parse_admit(payload), s, feed, s.constraint, info.get("spec", ""))
+         except Exception as exc:              # rank 1 applies the same ADMIT: the ranks may no longer agree
+             self.broken = exc
+             raise
++        self.lanes[sid].key = key
++
++    def _encode(self, prepared, cut: int):
++        """Rank 0: the tower's rows of the pictures a prompt resumed at ``cut`` still fills (those whose rows end past
++        it), as a VisionFeed; None when the kept state already holds them all."""
++
++        from .engine import VisionFeed
++
++        first, end = 0, 0
++        if cut and getattr(prepared, "item_rows", None):
++            for rows in prepared.item_rows:
++                if prepared.positions[end + rows - 1] >= cut:
++                    break
++                end += rows
++                first += 1
++            if first == len(prepared.item_rows):
++                return None
++            prepared = prepared.from_item(first)
++        positions = [int(p) for p in prepared.positions]
++        if not positions:
++            return None
++        t = time.perf_counter()
++        torch.cuda.empty_cache()
++        rows = self.g.vision.features(prepared)
++        torch.cuda.empty_cache()
++        if rows.shape[0] != len(positions):
++            raise ValueError(f"the tower gave {rows.shape[0]} rows for {len(positions)} image positions")
++        feed = VisionFeed(self.g, positions, rows)
++        feed.encode_s = time.perf_counter() - t
++        return feed
+ 
+     def _parse_admit(self, p: list[int]) -> dict:
+         (sid, slot, base, size, kid, copy, count, stop_eos, draft) = p[:9]
+@@ -746,9 +831,12 @@
+         i += 1 + n
+         n = p[i]
+         positions = p[i + 1:i + 1 + n]
++        images = bool(p[i + 1 + n])
++        vrows, vkeys, vpos, _ = unpack_keys(p, i + 2 + n)
++        keyed = keyed_ids(prompt, vpos, vrows, vkeys) if vrows else None
+         return dict(sid=sid, slot=slot, base=base, size=size, kid=kid, copy=copy, count=count, stop_eos=bool(stop_eos),
+                     draft=bool(draft), sampling=sampling, shared=shared, code=code, prompt=prompt, packed=packed,
+-                    positions=positions)
++                    positions=positions, images=images, keyed=keyed)
+ 
+     def _admitted(self, a: dict, s: Stream, feed, constraint, spec: str = "") -> None:
+         """Both ranks: an ADMIT's stream in its slot and extent, resumed from its kept prompt if it names one."""
+@@ -779,7 +867,9 @@
+         dflash = code[0] >= 10 and self.drafts is not None
+         policy = decode_policy(code, g.costs) if code[0] else None
+         lane = Lane(s, a["sid"], a["slot"], x, st, self.next_order, code, spec, policy, dflash, feed=feed,
+-                    constraint=constraint)
++                    constraint=constraint, images=a["images"])
++        if a.get("keyed") is not None:              # rank 1 too: its kept states are stored and matched by them
++            lane.key = a["keyed"]
+         self.next_sid = max(self.next_sid, a["sid"] + 1)
+         self.next_order += 1
+         s.sid, s.cached = a["sid"], cut
+@@ -805,7 +895,7 @@
+                 lane.head = hit.head.clone()
+             self._touch(hit)
+         # where its prompt states are kept: the grid point (or the end) and rank 0's shared-prefix points
+-        if a["draft"] and feed is None:
++        if a["draft"]:
+             lane.point = grid_point(len(prompt), cut, self.grid)
+             lane.shared = sorted(p for p in set(a["shared"]) if lane.point is not None and cut < p < lane.point)
+             lane.stops = list(lane.shared) + ([lane.point] if lane.point is not None and lane.point < len(prompt)
+@@ -832,25 +922,34 @@
+                 return c
+         raise RuntimeError(f"rank {self.rank} holds no kept prompt {kid}")
+ 
+-    def _resume(self, prompt: list[int]):
+-        """The longest kept strict prefix of ``prompt``, or the whole prompt when it kept its head's logits row (a
+-        replay of an earlier prompt), whose DFlash2 window came along. The prompt is compared as one int64 array
+-        against each kept prompt's cached array (``_ids_array``): the same answer as comparing the id lists, without
+-        copying every kept prompt's ids for every request (32 kept prompts of 100K+ tokens cost tens of ms a request)."""
++    def _resume(self, key: list[int]):
++        """The longest kept strict prefix of ``key`` (a prompt's keyed ids, ``Lane.key``), or the whole prompt when it
++        kept its head's logits row (a replay of an earlier prompt), whose DFlash2 window came along. The key is
++        compared as one int64 array against each kept prompt's cached key array (``_key_array``): the same answer as
++        comparing the lists, without copying every kept prompt's key for every request (32 kept prompts of 100K+
++        tokens cost tens of ms a request)."""
+         best = None
+         arr = None
++        import os as _os
++        _dbg = _os.environ.get("TF_GLM_RESUME_DEBUG") == "1"
++        if _dbg and self.kept:
++            print(f"[resume r{self.rank}] key_len={len(key)} kept=" +
++                  str([(len(c.ids), c.drafter_end, c.drafter_rows is not None, c.head is not None,
++                        c.key is not None and len(c.key)) for c in self.kept]), flush=True)
+         for c in self.kept:
+             n = len(c.ids)
+             fits = c.drafter_end == n and c.drafter_rows is not None or self.drafts is None
+             fits = fits and not (self.grid and n % self.grid)
+-            short = n < len(prompt) or (n == len(prompt) and c.head is not None)
++            short = n < len(key) or (n == len(key) and c.head is not None)
++            if _dbg and not (fits and short):
++                print(f"[resume r{self.rank}] reject n={n} fits={fits} short={short}", flush=True)
+             if not (fits and short and (best is None or n > len(best.ids))):
+                 continue
+-            if n and prompt[n - 1] != c.ids[-1]:              # cheap reject before the full comparison
++            if c.key is None or (n and key[n - 1] != c.key[n - 1]):   # cheap reject before the full comparison
+                 continue
+             if arr is None:
+-                arr = np.asarray(prompt, dtype=np.int64)
+-            if np.array_equal(arr[:n], _ids_array(c)):
++                arr = np.asarray(key, dtype=np.int64)
++            if np.array_equal(arr[:n], _key_array(c)):
+                 best = c
+         return best
+ 
+@@ -873,13 +972,16 @@
+             snap.drafter_end = n
+             snap.drafter_rows = draft_window(self._ctx(lane), n)
+         snap.head = head
++        # rank 0's key: a text prompt's is its ids (shared, not a second list); rank 1 keeps none
++        snap.key = None if lane.key is None else snap.ids if not lane.images else lane.key[:n]
++        snap.images = lane.images
+         snap.kid = self.next_kid
+         self.next_kid += 1
+         snap.extent = lane.extent
+         snap.shared = n in lane.shared         # the spill tier never writes a shared-prefix state's elder
+-        snap.images = lane.feed is not None    # an image prompt's rows are not its ids' rows: never written either
+         keep_rendered(snap, lane.s.prompt)
+-        for c in [c for c in self.kept if c.ids == snap.ids]:
++        # the same ids: the same prompt, unless pictures are in it (rank 1 has no keys; rank 0 resumes by key)
++        for c in [c for c in self.kept if c.ids == snap.ids and not (c.images or snap.images)]:
+             self._drop(c, spill=False)
+         lane.extent.kept.append(snap)
+         self.kept.append(snap)
+@@ -1015,9 +1117,15 @@
+         k = getattr(c, "spill_key", None)
+         if k is None:
+             from tensorfold.cuda.spill import ids_key
+-            k = c.spill_key = ids_key(c.ids)
++            k = c.spill_key = ids_key(self._ident(c))
+         return k
+ 
++    @staticmethod
++    def _ident(c) -> list[int]:
++        """What the tier stores and matches a kept prompt by: its ids, or its keyed ids when it has pictures."""
++
++        return c.key if c.images else c.ids
++
+     def _superseded(self, c) -> bool:
+         """A longer kept prompt of the same conversation (the same extent, it extends c) that can be written itself:
+         c need not be. Never a shared-prefix state (other conversations resume from it, not from the longer one). The
+@@ -1038,8 +1146,8 @@
+     def _unspillable(self, c) -> str | None:
+         """Why kept prompt ``c`` cannot be written (None: it can)."""
+ 
+-        if getattr(c, "images", False):
+-            return "images"                     # an image prompt's rows are not its ids' rows
++        if c.images and c.key is None:
++            return "images"                     # pictures without content keys: nothing tells them apart
+         n = len(c.ids)
+         if n < self.disk.cfg.min_tokens:
+             return "short"
+@@ -1071,12 +1179,12 @@
+             if leaving:
+                 self._unwritten(why)
+             return False
+-        if d.has(c.ids, self._key(c)):
++        if d.has(self._ident(c), self._key(c)):
+             return False
+         self._sync()
+         try:
+-            job = d.save(c.ids, c, self._planes(c.extent.base, len(c.ids)), skip=self._SPILL_SKIP,
+-                         head=c.head is not None, keep=keep)
++            job = d.save(self._ident(c), c, self._planes(c.extent.base, len(c.ids)), skip=self._SPILL_SKIP,
++                         head=c.head is not None, tokens=c.ids if c.images else None, keep=keep)
+         except Exception as exc:                 # noqa: BLE001  (a spill never fails the engine: the prompt is lost)
+             print(f"[tensorfold] spill rank {self.rank}: not written: {exc!r}", flush=True)
+             job = None
+@@ -1119,7 +1227,7 @@
+         for c in order:
+             if covered >= want and not (near_cap and c is order[0]):
+                 break
+-            if getattr(c, "images", False) or c.kid in skip:
++            if (c.images and c.key is None) or c.kid in skip:    # (pictures without content keys: never written)
+                 continue
+             if d.has(c.ids, self._key(c)) or self._superseded(c):
+                 covered += len(c.ids)
+@@ -1150,9 +1258,14 @@
+         if self.disk is None or not s.draft:
+             return None
+         self._check()
+-        if s.vision is not None:                 # an image prompt resumes no state, from memory either
+-            return None
+         prompt = [int(t) for t in s.prompt]
++        if s.vision is not None:                 # pictures: matched by content (keyed ids), or not at all
++            v = s.vision
++            keys = getattr(v, "item_keys", None)
++            if not keys or sum(v.item_rows) != len(v.positions):
++                return None
++            prompt = keyed_ids(prompt, [int(p) for p in v.positions], [int(r) for r in v.item_rows],
++                               [int(k) for k in keys])
+         if self._need(len(prompt)) > self.pool.rows:
+             return None
+         for h in self.loads.values():            # the same stored prompt on its way already: wait for that read
+@@ -1245,10 +1358,12 @@
+             self.pool.remove(x)
+             return False
+         snap.ids = [int(t) for t in json.loads(meta["tokens"])]
++        keyed = json.loads(meta["keyed"]) if meta.get("keyed") else None
+         snap.pending, snap.mtp_len, snap.rows, snap.nbytes = None, -1, None, 0
+         snap.kid = self.next_kid
+         self.next_kid += 1
+-        snap.images = False
++        snap.key = keyed if keyed is not None else (snap.ids if self.rank == 0 else None)
++        snap.images = keyed is not None
+         snap.shared = False
+         snap.extent = x
+         x.kept.append(snap)
+@@ -1981,7 +2096,7 @@
+             lanes = sorted(self.lanes.values(), key=lambda l: (l.s.priority, l.order), reverse=True)
+         else:
+             lanes = sorted(self.lanes.values(), key=lambda l: l.order, reverse=True)
+-        lane = next((l for l in lanes if l.constraint is None and l.feed is None), None)
++        lane = next((l for l in lanes if l.constraint is None and not l.images), None)
+         if lane is None:
+             lane = lanes[0]
+             lane.s.error = NoRoom("the pool is full: every stream waits for room, and the youngest cannot replay "
+
+diff --git tensorfold/vision/glm.py tensorfold/vision/glm.py
+--- tensorfold/vision/glm.py
++++ tensorfold/vision/glm.py
+@@ -251,13 +251,36 @@
+     items: list[tuple[str, Any]]
+     positions: list[int]
+     content_hash: str = ""
++    # per item, in order: its feature rows, and a 62-bit key of its kind, shape and pixels (prompt reuse tells
++    # pictures apart by these: their placeholder tokens are all the same)
++    item_rows: list[int] = field(default_factory=list)
++    item_keys: list[int] = field(default_factory=list)
+ 
+     def continued(self, ids: list[int]) -> "GlmPrepared":
+         """The same pictures under a longer prompt (a tool gate's continuation): positions are token positions."""
+ 
+         if list(ids[:len(self.token_ids)]) != list(self.token_ids):
+             raise ValueError("a continued image prompt must extend the original prompt")
+-        return GlmPrepared(list(ids), self.items, self.positions, self.content_hash)
++        return GlmPrepared(list(ids), self.items, self.positions, self.content_hash, self.item_rows, self.item_keys)
++
++    def from_item(self, k: int) -> "GlmPrepared":
++        """Only items k.. and their feature rows' positions (a prompt resumed past the earlier items' rows)."""
++
++        skip = sum(self.item_rows[:k])
++        return GlmPrepared(self.token_ids, self.items[k:], self.positions[skip:], self.content_hash,
++                           self.item_rows[k:], self.item_keys[k:])
++
++    def keyed_ids(self) -> list[int]:
++        """The prompt's ids with each item's feature rows replaced by -1 - its key: equal prefixes then mean the same
++        pictures in the same places, not only the same placeholder tokens."""
++
++        ids = list(self.token_ids)
++        at = 0
++        for rows, key in zip(self.item_rows, self.item_keys):
++            for p in self.positions[at:at + rows]:
++                ids[p] = -1 - key
++            at += rows
++        return ids
+ 
+ 
+ # -- the tower --------------------------------------------------------------------------------------------------
+@@ -557,10 +580,15 @@
+         if len(positions) != rows:
+             raise ImageInputError(f"the prompt has {len(positions)} image positions for {rows} feature rows")
+         digest = hashlib.sha256(b"tensorfold-glm-vision-v1\0")
++        keys = []
+         for kind, x in items:
+-            digest.update(kind.encode() + json.dumps(list(x.shape)).encode())
+-            digest.update(x.numpy().tobytes())
+-        return GlmPrepared(ids, items, positions, digest.hexdigest())
++            head = kind.encode() + json.dumps(list(x.shape)).encode()
++            data = x.numpy().tobytes()
++            digest.update(head)
++            digest.update(data)
++            keys.append(int.from_bytes(hashlib.sha256(head + b"\0" + data).digest()[:8], "big") >> 2)
++        return GlmPrepared(ids, items, positions, digest.hexdigest(), [self._rows(kind, x) for kind, x in items],
++                           keys)
+ 
+     @staticmethod
+     def _rows(kind: str, x) -> int:

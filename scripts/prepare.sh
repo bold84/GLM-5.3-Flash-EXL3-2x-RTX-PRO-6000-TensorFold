@@ -43,7 +43,7 @@ validate_config() {
 image_hash() {
   local patch
   mapfile -t PATCHES < <("$REPO_ROOT/scripts/apply-patches.sh" --list)
-  (( ${#PATCHES[@]} == 87 )) || fail E_PATCHES 'The release requires exactly 87 patches.'
+  (( ${#PATCHES[@]} == 89 )) || fail E_PATCHES 'The release requires exactly 89 patches.'
   { for patch in "${PATCHES[@]}"; do cat "$REPO_ROOT/$patch"; done
     cat "$REPO_ROOT/scripts/apply-patches.sh" "$REPO_ROOT/scripts/prepare.sh"
     printf '%s\n' "$TF_COMMIT" "$BASE_IMAGE" "$IMAGE_EXTRAS"
@@ -123,7 +123,7 @@ check_disk() {
 
 prepare_image() {
   if [[ "$DRY_RUN" != 1 ]] && image_ready; then log "Image is ready: $IMAGE ($PATCHES_HASH)"; return; fi
-  log "Build $IMAGE: clone TensorFold $TF_VERSION at $TF_COMMIT, apply 87 patches, install runtime."
+  log "Build $IMAGE: clone TensorFold $TF_VERSION at $TF_COMMIT, apply 89 patches, install runtime."
   run docker build -t "$IMAGE" --build-arg "BASE_IMAGE=$BASE_IMAGE" --build-arg "TF_REPO=$TF_REPO" \
     --build-arg "TF_COMMIT=$TF_COMMIT" --build-arg "IMAGE_EXTRAS=$IMAGE_EXTRAS" --build-arg "PATCHES_HASH=$PATCHES_HASH" \
     -f - "$REPO_ROOT" <<'DOCKERFILE' || fail E_IMAGE 'Image build failed. Check disk space, network access and the first build error.'

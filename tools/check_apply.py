@@ -37,19 +37,19 @@ def clean_patch(source, target):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-patches", type=Path, required=True,
-                        help="read-only directory containing the staged release's 87 patches")
+                        help="read-only directory containing the staged release's 89 patches")
     parser.add_argument("--upstream", type=Path,
                         help="read-only local TensorFold Git clone containing the pinned v0.6.6 commit")
     args = parser.parse_args()
     release = args.release_patches.resolve()
     apply = str(ROOT / "scripts/apply-patches.sh")
     series = run(apply, "--list").splitlines()
-    assert len(series) == 87
+    assert len(series) == 89
     assert series == sorted(series, key=lambda name: Path(name).name)
     assert {p.name for p in release.glob("*.patch")} == {Path(p).name for p in series}
     for name in series:
         assert (ROOT / name).read_bytes() == (release / Path(name).name).read_bytes(), name
-    print("PASS: all 87 default patches byte-identical to the staged release, same global order")
+    print("PASS: all 89 default patches byte-identical to the staged release, same global order")
     print("Recipe label:", run(str(ROOT / "scripts/prepare.sh"), "--label").strip())
     if not args.upstream:
         print("NOT RUN: fresh apply (supply --upstream)")
